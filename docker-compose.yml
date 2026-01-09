@@ -1,0 +1,18 @@
+services:
+  # NoneBot2 QQ机器人
+  qqbot:
+    build: .
+    container_name: chatbot-test
+    restart: unless-stopped
+    volumes:
+      # 挂载当前目录到容器，方便开发调试
+      - ./:/app
+    environment:
+      - PYTHONPATH=/app
+      # 强制使用AIOHTTP驱动（支持WebSocket）
+      - DRIVER=~aiohttp
+      # OneBot WebSocket连接配置（使用localhost，因为都是host网络）
+      - ONEBOT_WS_URLS=["ws://localhost:3001"]
+      - ONEBOT_ACCESS_TOKEN=A,Fb*=CMI2L7WQp&
+    # 使用host网络模式，与lama容器共享网络命名空间
+    network_mode: host
