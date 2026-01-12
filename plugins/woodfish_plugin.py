@@ -130,21 +130,51 @@ woodfish_db = WoodfishDatabase()
 
 # 敲木鱼结果配置 (delta, weight, message)
 KNOCK_RESULTS = [
-    (1, 50, "🪵 咚~ 功德 +1"),
-    (2, 20, "🪵 咚咚~ 功德 +2"),
-    (5, 10, "🪵 咚咚咚~ 功德 +5"),
-    (10, 8, "✨ 木鱼发光了！功德 +10"),
-    (50, 5, "🌟 佛祖显灵！功德 +50"),
-    (100, 3, "💫 暴击！！功德 +100！！"),
-    (233, 1, "🎉 超级暴击！功德 +233！！！"),
-    (-5, 2, "💥 木鱼敲裂了...功德 -5"),
-    (-10, 1, "😱 木鱼碎了！功德 -10"),
+    # 正常收益
+    (1, 60, "🪵 咚~ 功德 +1"),
+    (2, 25, "🪵 咚咚~ 功德 +2"),
+    (3, 12, "🪵 咚咚咚~ 功德 +3"),
+    (5, 8, "✨ 木鱼微微发光~ 功德 +5"),
+    
+    # 小暴击
+    (10, 3, "🌟 佛光乍现！功德 +10"),
+    (20, 1, "💫 佛祖微微点头~ 功德 +20"),
+    
+    # 大暴击（极低概率）
+    (50, 0.3, "🎆 佛祖显灵！！功德 +50！"),
+    (100, 0.1, "🌈 超级暴击！！！功德 +100！！！"),
+    (233, 0.05, "👼 天降神迹！！！功德 +233！！！！"),
+    
+    # 负面效果（提高概率）
+    (-1, 8, "💨 敲歪了...功德 -1"),
+    (-2, 5, "😅 手滑了...功德 -2"),
+    (-5, 4, "💥 木鱼敲裂了...功德 -5"),
+    (-10, 3, "😱 木鱼碎了！功德 -10"),
+    (-20, 1, "🔥 木鱼着火了！！功德 -20"),
+    (-50, 0.3, "💀 惊动了佛祖...功德 -50"),
+    
+    # 奇怪效果
+    (0, 10, "🤔 木鱼发出了奇怪的声音...功德 +0"),
+    (0, 5, "👻 木鱼里好像有东西...功德 +0"),
+    (0, 3, "🌀 你陷入了沉思...功德 +0"),
+    (0, 2, "😴 你敲着敲着睡着了...功德 +0"),
+    (0, 1, "🐱 一只猫跳上了木鱼...功德 +0"),
+    
+    # 特殊效果
+    (7, 2, "🎰 幸运数字7！功德 +7"),
+    (-7, 1, "🎰 不幸数字7...功德 -7"),
+    (13, 0.5, "🌙 神秘数字13！功德 +13"),
+    (-13, 0.5, "🌑 不祥数字13...功德 -13"),
+    (66, 0.2, "😈 六六大顺！功德 +66"),
+    (-66, 0.1, "👿 六六大凶...功德 -66"),
+    (88, 0.1, "🧧 发发发！功德 +88"),
+    (114514, 0.01, "🤣 哼哼哼啊啊啊啊啊！功德 +114514"),
 ]
 
 def get_knock_result() -> Tuple[int, str]:
     """根据权重随机获取敲木鱼结果"""
     total_weight = sum(r[1] for r in KNOCK_RESULTS)
-    rand = random.randint(1, total_weight)
+    rand = random.uniform(0, total_weight)
     current = 0
     for delta, weight, msg in KNOCK_RESULTS:
         current += weight
@@ -157,6 +187,39 @@ def get_knock_result() -> Tuple[int, str]:
 knock_cmd = on_command("敲木鱼", aliases={"木鱼", "muyu", "敲"}, priority=5, block=True)
 merit_rank_cmd = on_command("功德榜", aliases={"功德排行", "今日功德榜"}, priority=5, block=True)
 total_merit_cmd = on_command("总功德榜", aliases={"功德总榜"}, priority=5, block=True)
+
+# 防刷记录：{(group_id, user_id): [timestamp1, timestamp2, ...]}
+knock_history: Dict[Tuple[str, str], List[float]] = {}
+import time
+
+
+def count_knock_chars(text: str) -> int:
+    """统计命令中'敲'字的数量"""
+    return text.count("敲")
+
+
+def check_spam(group_id: str, user_id: str) -> int:
+    """
+    检查是否刷屏（10秒内超过3次）
+    返回: 0=正常, >0=刷屏次数（需要扣的功德）
+    """
+    key = (group_id, user_id)
+    now = time.time()
+    
+    if key not in knock_history:
+        knock_history[key] = []
+    
+    # 清理10秒前的记录
+    knock_history[key] = [t for t in knock_history[key] if now - t < 10]
+    
+    # 记录本次
+    knock_history[key].append(now)
+    
+    # 10秒内超过3次算刷屏
+    count = len(knock_history[key])
+    if count > 3:
+        return count - 3  # 超出的次数
+    return 0
 
 
 @knock_cmd.handle()
@@ -175,7 +238,35 @@ async def handle_knock(bot: Bot, event: Event):
         if not nickname:
             nickname = user_id
         
-        # 敲木鱼
+        # 获取原始消息文本
+        raw_text = event.get_plaintext().strip()
+        
+        # 检查多个"敲"字（如 /敲敲敲敲）
+        knock_count = count_knock_chars(raw_text)
+        if knock_count > 1:
+            # 每多一个"敲"扣1功德
+            penalty = knock_count - 1
+            today_merit, total_merit = woodfish_db.knock(group_id, user_id, nickname, -penalty)
+            result = f"🚫 贪心敲了{knock_count}下！功德 -{penalty}\n今日功德: {today_merit} | 总功德: {total_merit}"
+            await knock_cmd.finish(Message([
+                MessageSegment.at(user_id),
+                MessageSegment.text(f" {result}")
+            ]))
+            return
+        
+        # 检查刷屏（10秒内超过3次）
+        spam_count = check_spam(group_id, user_id)
+        if spam_count > 0:
+            penalty = spam_count * 2  # 刷屏每次扣2功德
+            today_merit, total_merit = woodfish_db.knock(group_id, user_id, nickname, -penalty)
+            result = f"🚫 敲太快了！10秒内只能敲3次！功德 -{penalty}\n今日功德: {today_merit} | 总功德: {total_merit}"
+            await knock_cmd.finish(Message([
+                MessageSegment.at(user_id),
+                MessageSegment.text(f" {result}")
+            ]))
+            return
+        
+        # 正常敲木鱼
         delta, msg = get_knock_result()
         today_merit, total_merit = woodfish_db.knock(group_id, user_id, nickname, delta)
         
