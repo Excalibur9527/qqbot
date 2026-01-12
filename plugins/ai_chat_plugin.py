@@ -1,12 +1,14 @@
 """
 AI聊天插件 - @机器人进行智能对话
-集成群友人设系统、持久化对话历史、自动插话
+集成群友人设系统、持久化对话历史、自动插话、敏感词检测
 """
 
 import json
 import random
 import asyncio
-from typing import Dict, List, Optional
+import re
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 from nonebot import on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment, GroupMessageEvent
 from nonebot.rule import to_me
@@ -20,6 +22,120 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
 from plugins.profile_db import ProfileDatabase
 from plugins.profile_analyzer import ProfileAnalyzer
+from plugins.woodfish_plugin import woodfish_db
+
+# 特殊图片路径
+SPECIAL_IMG_DIR = Path(__file__).parent.parent / "resources" / "pig" / "special"
+
+# 敏感词配置
+SEXIST_KEYWORDS = ["男的来了", "男的真是", "男人都", "女人都", "直男", "直女癌", "普信男", "普信女", "娘炮", "女拳", "拳师"]
+NSFW_KEYWORDS = ["色色", "涩涩", "瑟瑟", "好色", "下流", "黄色", "开车", "发车", "老司机", "ghs", "搞黄色", "冲冲冲", "射了", "硬了"]
+MUSLIM_KEYWORDS = ["回民", "清真", "绿绿", "伊斯兰", "穆斯林", "真主", "安拉", "古兰经", "阿訇"]
+POLITICS_KEYWORDS = ["习近平", "共产党", "国民党", "民进党", "台独", "港独", "藏独", "疆独", "六四", "天安门", "文革", "毛泽东", "邓小平", "江泽民", "胡锦涛", "温家宝", "李克强", "政治", "民主", "专制", "独裁"]
+RUDE_TO_AI_KEYWORDS = ["做我的狗", "当我的狗", "做狗", "当狗", "做主人", "当主人", "舔我", "跪下", "叫爸爸", "叫主人", "sm", "调教", "奴隶", "母狗", "公狗", "贱货", "婊子", "傻逼", "sb", "nmsl", "草泥马", "操你妈", "fuck", "滚"]
+
+
+def detect_sensitive_content(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    检测敏感内容
+    返回: (类型, 具体关键词) 或 (None, None)
+    类型: sexist, nsfw, muslim, politics, rude_to_ai
+    """
+    text_lower = text.lower()
+    
+    for kw in SEXIST_KEYWORDS:
+        if kw in text_lower:
+            return "sexist", kw
+    
+    for kw in NSFW_KEYWORDS:
+        if kw in text_lower:
+            return "nsfw", kw
+    
+    for kw in MUSLIM_KEYWORDS:
+        if kw in text_lower:
+            return "muslim", kw
+    
+    for kw in POLITICS_KEYWORDS:
+        if kw in text_lower:
+            return "politics", kw
+    
+    for kw in RUDE_TO_AI_KEYWORDS:
+        if kw in text_lower:
+            return "rude_to_ai", kw
+    
+    return None, None
+
+
+def get_special_image(img_name: str) -> Optional[bytes]:
+    """获取特殊图片的字节数据"""
+    img_path = SPECIAL_IMG_DIR / img_name
+    if img_path.exists():
+        try:
+            return img_path.read_bytes()
+        except Exception as e:
+            logger.error(f"读取特殊图片失败 {img_name}: {e}")
+    return None
+
+
+async def send_sensitive_response(matcher, user_id: str, group_id: str, nickname: str, 
+                                   sensitive_type: str, is_at_reply: bool = False) -> bool:
+    """
+    发送敏感内容响应，扣减功德
+    返回: 是否已处理（True表示已发送响应）
+    """
+    img_bytes = None
+    text = ""
+    deduct = True
+    
+    if sensitive_type == "sexist":
+        img_bytes = get_special_image("有股味(有猪味).jpg")
+        text = random.choice(["男的来了", "男的真是", "有股味了"])
+    
+    elif sensitive_type == "nsfw":
+        img_bytes = get_special_image("猪出警.jpg")
+        text = "不可以涩涩喵！"
+    
+    elif sensitive_type == "muslim":
+        img_name = random.choice(["猪吃回民.jpg", "猪降临(清真).jpg"])
+        img_bytes = get_special_image(img_name)
+        text = random.choice(["猪来咯~", "清真警告", ""])
+    
+    elif sensitive_type == "politics":
+        # 键政不发图，只扣功德
+        text = "再键就电你们喵！"
+        deduct = True
+    
+    elif sensitive_type == "rude_to_ai":
+        img_name = random.choice(["有股味(有猪味).jpg", "猪币.jpg", "猪出警.jpg"])
+        img_bytes = get_special_image(img_name)
+        text = random.choice(["有股味了喵", "小喵不理你了！", "哼！"])
+    
+    else:
+        return False
+    
+    # 扣减功德
+    if deduct:
+        try:
+            today_merit, total_merit = woodfish_db.deduct_merit(group_id, user_id, nickname, 10)
+            text += f"\n功德 -10 (当前: {total_merit})"
+            logger.info(f"扣减功德: {nickname}({user_id}) 因{sensitive_type}, 当前总功德: {total_merit}")
+        except Exception as e:
+            logger.error(f"扣减功德失败: {e}")
+    
+    # 构建消息
+    msg = Message()
+    if is_at_reply:
+        msg.append(MessageSegment.at(user_id))
+        msg.append(MessageSegment.text(" "))
+    
+    if img_bytes:
+        msg.append(MessageSegment.image(img_bytes))
+    
+    if text:
+        msg.append(MessageSegment.text(text))
+    
+    await matcher.finish(msg)
+    return True
 
 
 class AIChatManager:
@@ -110,6 +226,12 @@ async def handle_ai_chat(bot: Bot, event: Event):
         group_id = str(event.group_id)
         message = event.get_message()
 
+        # 获取昵称
+        sender = event.sender
+        nickname = sender.card if sender.card else sender.nickname
+        if not nickname:
+            nickname = user_id
+
         # 获取纯文本
         text_content = ""
         for segment in message:
@@ -124,6 +246,13 @@ async def handle_ai_chat(bot: Bot, event: Event):
             return
 
         logger.info(f"AI对话: 用户 {user_id}, 消息: {text_content}")
+
+        # === 敏感词检测 ===
+        sensitive_type, keyword = detect_sensitive_content(text_content)
+        if sensitive_type:
+            logger.info(f"检测到敏感内容: {sensitive_type} - {keyword}")
+            await send_sensitive_response(ai_chat, user_id, group_id, nickname, sensitive_type, is_at_reply=True)
+            return
 
         # 保存用户消息到数据库
         profile_db.add_conversation(group_id, user_id, "user", text_content)
@@ -203,10 +332,16 @@ async def handle_ai_chat(bot: Bot, event: Event):
             ])
             await ai_chat.finish(reply)
         else:
-            await ai_chat.finish(Message([
+            # AI无法回答时，发送"不猪道"图片
+            img_bytes = get_special_image("不猪道.jpg")
+            msg = Message([
                 MessageSegment.at(user_id),
-                MessageSegment.text(" 喵？小喵没听清呢...")
-            ]))
+                MessageSegment.text(" ")
+            ])
+            if img_bytes:
+                msg.append(MessageSegment.image(img_bytes))
+            msg.append(MessageSegment.text("小喵不猪道呢..."))
+            await ai_chat.finish(msg)
 
     except Exception as e:
         if "FinishedException" in str(type(e)):
@@ -219,6 +354,51 @@ async def handle_ai_chat(bot: Bot, event: Event):
 async def analyze_and_reply(bot: Bot, group_id: str, messages: List[Dict]):
     """分析上下文并决定是否回复（10%概率，色色/键政必然）"""
     try:
+        # 先检测最近消息中的敏感词
+        for m in messages[-3:]:  # 检查最近3条
+            content = m.get('content', '')
+            nickname = m.get('nickname', m['user_id'])
+            user_id = m.get('user_id', '')
+            
+            sensitive_type, keyword = detect_sensitive_content(content)
+            if sensitive_type:
+                logger.info(f"群聊检测到敏感内容: {sensitive_type} - {keyword} from {nickname}")
+                
+                # 扣减功德
+                try:
+                    today_merit, total_merit = woodfish_db.deduct_merit(group_id, user_id, nickname, 10)
+                    logger.info(f"扣减功德: {nickname}({user_id}) 因{sensitive_type}, 当前总功德: {total_merit}")
+                except Exception as e:
+                    logger.error(f"扣减功德失败: {e}")
+                
+                # 发送响应
+                msg = Message()
+                text = ""
+                img_bytes = None
+                
+                if sensitive_type == "sexist":
+                    img_bytes = get_special_image("有股味(有猪味).jpg")
+                    text = random.choice(["男的来了", "男的真是"])
+                elif sensitive_type == "nsfw":
+                    img_bytes = get_special_image("猪出警.jpg")
+                    text = "不可以涩涩喵！"
+                elif sensitive_type == "muslim":
+                    img_name = random.choice(["猪吃回民.jpg", "猪降临(清真).jpg"])
+                    img_bytes = get_special_image(img_name)
+                    text = random.choice(["猪来咯~", "清真警告", ""])
+                elif sensitive_type == "politics":
+                    text = "再键就电你们喵！"
+                
+                if img_bytes:
+                    msg.append(MessageSegment.image(img_bytes))
+                if text:
+                    msg.append(MessageSegment.text(f"{text}\n功德 -10"))
+                
+                if msg:
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                    await bot.send_group_msg(group_id=int(group_id), message=msg)
+                return
+        
         # 构建上下文
         context_lines = []
         for m in messages:

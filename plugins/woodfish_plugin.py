@@ -117,6 +117,12 @@ class WoodfishDatabase:
             LIMIT ?
         """, (group_id, limit))
         return [{"nickname": r["nickname"], "user_id": r["user_id"], "merit": r["total_merit"]} for r in cursor.fetchall()]
+    
+    def deduct_merit(self, group_id: str, user_id: str, nickname: str, amount: int = 10) -> Tuple[int, int]:
+        """
+        扣减功德（用于惩罚），返回 (今日功德, 总功德)
+        """
+        return self.knock(group_id, user_id, nickname, -amount)
 
 
 # 全局实例
