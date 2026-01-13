@@ -30,20 +30,35 @@ nonebot.init()
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
 
+# 数据迁移
+def run_migration():
+    """运行数据迁移"""
+    try:
+        from plugins.migrate_data import migrate_data
+        migrate_data()
+    except Exception as e:
+        logger.error(f"数据迁移失败: {e}")
+
 # 在NoneBot初始化后加载插件
 def load_plugins():
     """加载插件"""
     try:
-        # 自定义插件
+        # 先运行数据迁移
+        run_migration()
+        
+        # 自定义插件（注意加载顺序）
         nonebot.load_plugin("plugins.test_plugin")
         nonebot.load_plugin("plugins.length_plugin")
+        # woodfish_plugin 必须在 ai_chat_plugin 之前加载
+        nonebot.load_plugin("plugins.woodfish_plugin")
         nonebot.load_plugin("plugins.ai_chat_plugin")
-        nonebot.load_plugin("plugins.joke_plugin")
         nonebot.load_plugin("plugins.pig_plugin")
         nonebot.load_plugin("plugins.roulette_plugin")
-        nonebot.load_plugin("plugins.woodfish_plugin")
         nonebot.load_plugin("plugins.persona_plugin")
         nonebot.load_plugin("plugins.tarot_plugin")
+        # 新增插件
+        nonebot.load_plugin("plugins.fishing_plugin")
+        nonebot.load_plugin("plugins.title_plugin")
         
         logger.info("插件加载完成")
     except Exception as e:

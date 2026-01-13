@@ -1,6 +1,7 @@
 """
 牛子长度插件 - 随机生成长度并回复有趣内容
 每天8点刷新，同一天同一人结果固定
+使用统一数据库存储长度数据
 """
 
 import random
@@ -16,14 +17,29 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
 from plugins.daily_utils import get_daily_seed
+from plugins.unified_db import unified_db
 
 
 def get_daily_length(user_id: str, group_id: str = "") -> int:
-    """根据用户ID和日期生成固定的今日长度（8点刷新）"""
+    """
+    获取今日长度（8点刷新）
+    优先从数据库读取，如果没有则生成并存储
+    """
+    # 尝试从数据库获取
+    user = unified_db.get_user(group_id, user_id)
+    if user and user.today_length is not None:
+        return user.today_length
+    
+    # 生成新的长度
     seed_str = get_daily_seed(user_id, group_id)
     seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
     rng = random.Random(seed)
-    return rng.randint(-30, 30)
+    length = rng.randint(-30, 30)
+    
+    # 存储到数据库
+    unified_db.update_length(group_id, user_id, length)
+    
+    return length
 
 
 def get_length_reply(length: int) -> str:

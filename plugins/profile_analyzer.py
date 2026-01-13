@@ -5,7 +5,7 @@
 
 import re
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 import httpx
 from nonebot.log import logger
 
@@ -13,13 +13,16 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
-from plugins.profile_db import ProfileDatabase
 
 
 class ProfileAnalyzer:
     """群友人设分析器"""
     
-    def __init__(self, db: ProfileDatabase):
+    def __init__(self, db):
+        """
+        初始化分析器
+        db: UnifiedDatabase 或 ProfileDatabase 实例
+        """
         self.db = db
         self.trigger_count = 10
     
@@ -115,11 +118,17 @@ class ProfileAnalyzer:
         
         message_count = len(messages)
         
-        # 获取现有数据
-        existing = self.db.get_profile(group_id, user_id)
-        old_profile = existing["profile"] if existing else None
-        old_tags = existing.get("tags", []) if existing else []
-        old_nickname = existing["nickname"] if existing else None
+        # 获取现有数据 - 兼容 UnifiedDatabase
+        user_data = self.db.get_user(group_id, user_id)
+        if user_data:
+            old_profile = user_data.profile if hasattr(user_data, 'profile') else None
+            old_tags = user_data.tags if hasattr(user_data, 'tags') else []
+            old_nickname = user_data.nickname if hasattr(user_data, 'nickname') else None
+        else:
+            old_profile = None
+            old_tags = []
+            old_nickname = None
+        
         old_memories = self.db.get_memories(group_id, user_id)
         
         # 构建 prompt 并调用 LLM
@@ -137,9 +146,8 @@ class ProfileAnalyzer:
         tags = result["tags"]
         new_event = result["new_event"]
         
-        # 更新数据库
-        nickname = old_nickname if old_nickname else "未知"
-        self.db.update_profile(group_id, user_id, nickname, profile, message_count, tags)
+        # 更新数据库 - 使用 UnifiedDatabase 的方法
+        self.db.update_profile(group_id, user_id, profile, tags)
         
         # 如果有新的重要事件，记录下来
         if new_event and len(new_event) > 2:

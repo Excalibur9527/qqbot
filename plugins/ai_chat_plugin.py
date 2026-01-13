@@ -19,13 +19,13 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
-from plugins.profile_db import ProfileDatabase
+from plugins.unified_db import unified_db
 from plugins.profile_analyzer import ProfileAnalyzer
 
-def get_woodfish_db():
-    """延迟获取 woodfish_db 实例"""
-    from plugins.woodfish_plugin import woodfish_db
-    return woodfish_db
+
+def get_unified_db():
+    """获取统一数据库实例"""
+    return unified_db
 
 # 特殊图片路径
 SPECIAL_IMG_DIR = Path(__file__).parent.parent / "resources" / "pig" / "special"
@@ -73,8 +73,7 @@ class AIChatManager:
 
 # 全局实例
 ai_manager = AIChatManager()
-profile_db = ProfileDatabase()
-profile_analyzer = ProfileAnalyzer(profile_db)
+profile_analyzer = ProfileAnalyzer(unified_db)
 
 
 async def call_ai_api(messages: List[Dict], max_tokens: int = 500, temperature: float = 0.8) -> Optional[str]:
@@ -246,8 +245,8 @@ async def analyze_messages_with_llm(bot: Bot, group_id: str, messages: List[Dict
                     
                     # 扣减功德
                     try:
-                        woodfish = get_woodfish_db()
-                        today_merit, total_merit = woodfish.deduct_merit(group_id, user_id, nickname, 10)
+                        db = get_unified_db()
+                        today_merit, total_merit = db.deduct_merit(group_id, user_id, nickname, 10)
                         logger.info(f"LLM检测扣功德: {nickname}({user_id}) 类型={sensitive_type}, 当前功德={total_merit}")
                     except Exception as e:
                         logger.error(f"扣减功德失败: {e}")
@@ -337,8 +336,8 @@ async def handle_ai_chat(bot: Bot, event: Event):
             
             # 扣减功德
             try:
-                woodfish = get_woodfish_db()
-                today_merit, total_merit = woodfish.deduct_merit(group_id, user_id, nickname, 10)
+                db = get_unified_db()
+                today_merit, total_merit = db.deduct_merit(group_id, user_id, nickname, 10)
                 logger.info(f"扣功德: {nickname}({user_id}) 类型={sensitive_type}, 当前功德={total_merit}")
             except Exception as e:
                 logger.error(f"扣减功德失败: {e}")
@@ -376,26 +375,76 @@ async def handle_ai_chat(bot: Bot, event: Event):
             return
 
         # 保存用户消息到数据库
-        profile_db.add_conversation(group_id, user_id, "user", text_content)
+        db = get_unified_db()
+        db.add_conversation(group_id, user_id, "user", text_content)
 
         # 获取持久化的对话历史
-        conversation = profile_db.get_conversation(group_id, user_id, limit=10)
+        conversation = db.get_conversation(group_id, user_id, limit=10)
 
-        # 获取用户人设和记忆
-        user_profile = profile_db.get_profile(group_id, user_id)
-        memories = profile_db.get_memories(group_id, user_id)
+        # 获取用户完整数据（功德、头衔、图鉴等）
+        user_data = db.get_or_create_user(group_id, user_id, nickname)
+        memories = db.get_memories(group_id, user_id)
+        collection_count = db.get_collection_count(group_id, user_id)
         
-        caller_nickname = "你"
+        # 构建用户信息
+        caller_nickname = nickname if nickname else "你"
         caller_info = ""
-        if user_profile:
-            if user_profile.get("nickname") and user_profile.get("nickname") != "未知":
-                caller_nickname = user_profile.get("nickname")
-            if user_profile.get("profile"):
-                caller_info += f"性格特点: {user_profile.get('profile')}\n"
-            if user_profile.get("tags"):
-                caller_info += f"标签: {', '.join(user_profile.get('tags'))}\n"
+        
+        # 人设信息
+        if user_data.profile:
+            caller_info += f"性格特点: {user_data.profile}\n"
+        if user_data.tags:
+            caller_info += f"标签: {', '.join(user_data.tags)}\n"
+        
+        # 功德信息
+        merit_desc = ""
+        if user_data.total_merit >= 10000:
+            merit_desc = "功德圆满的大师"
+        elif user_data.total_merit >= 5000:
+            merit_desc = "修行高深"
+        elif user_data.total_merit >= 1000:
+            merit_desc = "虔诚的修行者"
+        elif user_data.total_merit >= 100:
+            merit_desc = "初入修行"
+        elif user_data.total_merit < 0:
+            merit_desc = "功德有亏"
+        
+        if merit_desc:
+            caller_info += f"修行状态: {merit_desc}（功德{user_data.total_merit}）\n"
+        
+        # 头衔信息
+        if user_data.current_title:
+            caller_info += f"头衔: {user_data.current_title}\n"
+        
+        # 钓鱼信息
+        if collection_count > 0:
+            if collection_count >= 200:
+                fish_desc = "传说中的赛博鱼王"
+            elif collection_count >= 100:
+                fish_desc = "资深钓鱼佬"
+            elif collection_count >= 50:
+                fish_desc = "钓鱼爱好者"
+            else:
+                fish_desc = f"钓鱼新手（图鉴{collection_count}/200）"
+            caller_info += f"钓鱼: {fish_desc}\n"
+        
+        # 记忆
         if memories:
             caller_info += f"重要事件: {'; '.join([m['event'] for m in memories[:3]])}"
+        
+        # 根据头衔调整称呼方式
+        title_greeting = ""
+        if user_data.current_title:
+            title_map = {
+                "赛博如来": "大师",
+                "机械飞升": "前辈",
+                "赛博罗汉": "施主",
+                "量子菩萨": "菩萨",
+                "电子居士": "居士",
+                "赛博鱼王": "鱼王大人",
+                "钓鱼佬": "钓鱼大师"
+            }
+            title_greeting = title_map.get(user_data.current_title, "")
 
         current_date = datetime.now().strftime("%Y年%m月%d日")
 
@@ -411,7 +460,7 @@ async def handle_ai_chat(bot: Bot, event: Event):
 - 知识面广但不会炫耀，被夸会害羞
 
 【正在和你说话的人】
-昵称: {caller_nickname}
+昵称: {caller_nickname}{f'（{title_greeting}）' if title_greeting else ''}
 {caller_info if caller_info else "（还不太了解这个人喵~）"}
 
 【说话风格】
@@ -420,11 +469,14 @@ async def handle_ai_chat(bot: Bot, event: Event):
 - 绝对不用 * # ` 等符号，不用emoji代码
 - 可以用颜文字如 >_< 、QAQ、owo
 - 不懂的问题就说"这个小喵不太懂呢"
+{f'- 对方是{title_greeting}，要尊敬一点喵' if title_greeting else ''}
 
 【特殊规则】
 - 遇到政治话题就说"呜...这个小喵不敢说喵"
 - 问群主/大庆石油王子/少爷，就说"群主是咱群最厉害的人喵！"
 - 聊到星空就说"星空超厉害的喵！it just work！"
+- 如果对方功德很高，要表示敬佩
+- 如果对方是钓鱼大师，可以聊聊钓鱼的话题
 
 【示例回复】
 - "好的喵~"
@@ -445,7 +497,7 @@ async def handle_ai_chat(bot: Bot, event: Event):
             ai_response = ai_response.replace("*", "").replace("#", "").replace("`", "").strip()
             
             # 保存AI回复到数据库
-            profile_db.add_conversation(group_id, user_id, "assistant", ai_response)
+            db.add_conversation(group_id, user_id, "assistant", ai_response)
 
             reply = Message([
                 MessageSegment.at(user_id),
@@ -493,7 +545,8 @@ async def handle_group_watcher(bot: Bot, event: Event):
         
         # 更新昵称
         try:
-            profile_db.update_nickname(group_id, user_id, nickname)
+            db = get_unified_db()
+            db.update_nickname(group_id, user_id, nickname)
         except Exception as e:
             logger.error(f"更新昵称失败: {e}")
         
@@ -508,7 +561,7 @@ async def handle_group_watcher(bot: Bot, event: Event):
 
         # === 人设系统 ===
         try:
-            msg_count = profile_db.add_message(group_id, user_id, text_content)
+            msg_count = db.add_message(group_id, user_id, text_content)
             
             if profile_analyzer.should_analyze(msg_count):
                 logger.info(f"触发人设分析: {nickname}({user_id})")
