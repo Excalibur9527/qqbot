@@ -3,14 +3,23 @@
 命令：/钓鱼、/打窝、/图鉴、/钓鱼榜、/图鉴榜
 """
 
+from pathlib import Path
+from typing import Optional
+
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment, GroupMessageEvent
 from nonebot.log import logger
 
 from plugins.fishing_service import fishing_service, FishResult
-from plugins.fish_data import get_fish_by_id, Rarity, ALL_FISH
+from plugins.fish_data import get_fish_by_id, Rarity, ALL_FISH, Fish
 from plugins.title_service import title_service
 from plugins.unified_db import unified_db
+
+
+# 图片资源路径
+PLUGIN_DIR = Path(__file__).parent
+PROJECT_ROOT = PLUGIN_DIR.parent
+FISH_IMAGE_DIR = PROJECT_ROOT / "resources" / "fish"
 
 
 # 注册命令
@@ -19,6 +28,22 @@ bait_cmd = on_command("打窝", priority=5, block=True)
 collection_cmd = on_command("图鉴", priority=5, block=True)
 fish_rank_cmd = on_command("钓鱼榜", priority=5, block=True)
 collection_rank_cmd = on_command("图鉴榜", priority=5, block=True)
+
+
+def find_fish_image(fish: Fish) -> Optional[Path]:
+    """查找鱼的图片文件（精确匹配）"""
+    # 如果没有配置 image_id，返回 None
+    if not fish.image_id:
+        return None
+    
+    # 使用 image_id 精确匹配图片
+    exts = ["jpg", "jpeg", "png", "webp", "gif"]
+    for ext in exts:
+        file = FISH_IMAGE_DIR / f"{fish.image_id}.{ext}"
+        if file.exists():
+            return file
+    
+    return None
 
 
 def format_fish_result(result: FishResult) -> str:
@@ -110,21 +135,46 @@ async def handle_fish(bot: Bot, event: Event):
         # 执行钓鱼
         result = fishing_service.fish(group_id, user_id, nickname)
         
-        # 格式化结果
-        message = format_fish_result(result)
+        # 构建消息
+        msg = Message()
+        
+        # 如果钓到鱼，尝试发送图片
+        if result.success and result.fish:
+            img_path = find_fish_image(result.fish)
+            if img_path:
+                try:
+                    img_bytes = img_path.read_bytes()
+                    msg.append(MessageSegment.image(img_bytes))
+                except Exception as e:
+                    logger.error(f"读取鱼图片失败 {img_path}: {e}")
+            
+            # 如果有额外的鱼，也尝试发送图片
+            if result.extra_fish and result.extra_fish.fish:
+                extra_img_path = find_fish_image(result.extra_fish.fish)
+                if extra_img_path:
+                    try:
+                        extra_img_bytes = extra_img_path.read_bytes()
+                        msg.append(MessageSegment.image(extra_img_bytes))
+                    except Exception as e:
+                        logger.error(f"读取额外鱼图片失败 {extra_img_path}: {e}")
+        
+        # 格式化结果文本
+        message_text = format_fish_result(result)
         
         # 检查头衔解锁
         new_titles = title_service.check_and_unlock(group_id, user_id)
         if new_titles:
-            message += f"\n\n🏆 解锁新头衔：{', '.join(new_titles)}"
+            message_text += f"\n\n🏆 解锁新头衔：{', '.join(new_titles)}"
             # 设置QQ群头衔
             for title in new_titles:
                 await title_service.set_qq_title(bot, group_id, user_id, title)
         
-        await fish_cmd.finish(Message([
-            MessageSegment.at(user_id),
-            MessageSegment.text(f" {message}")
-        ]))
+        # 添加@和文本
+        msg_final = Message([MessageSegment.at(user_id)])
+        msg_final.extend(msg)
+        msg_final.append(MessageSegment.text(f" {message_text}"))
+        
+        await fish_cmd.finish(msg_final)
         
     except Exception as e:
         if "FinishedException" in str(type(e)):

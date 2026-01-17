@@ -235,6 +235,48 @@ class UnifiedDatabase:
             message_count=row["message_count"]
         )
     
+    def get_all_users_in_group(self, group_id: str) -> List[UserData]:
+        """获取群内所有用户数据"""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM user_data WHERE group_id = ?", (group_id,))
+        rows = cursor.fetchall()
+        
+        users = []
+        for row in rows:
+            today_merit, bait_count, today_length = self._check_daily_reset(row)
+            
+            try:
+                unlocked_titles = json.loads(row["unlocked_titles"] or "[]")
+            except:
+                unlocked_titles = []
+            
+            try:
+                tags = json.loads(row["tags"] or "[]")
+            except:
+                tags = []
+            
+            users.append(UserData(
+                group_id=row["group_id"],
+                user_id=row["user_id"],
+                nickname=row["nickname"] or "",
+                total_merit=row["total_merit"],
+                today_merit=today_merit,
+                today_date=row["today_date"],
+                knock_count=row["knock_count"],
+                today_length=today_length,
+                length_date=row["length_date"],
+                fish_count=row["fish_count"],
+                bait_count=bait_count,
+                bait_date=row["bait_date"],
+                unlocked_titles=unlocked_titles,
+                current_title=row["current_title"] or "",
+                profile=row["profile"] or "",
+                tags=tags,
+                message_count=row["message_count"]
+            ))
+        
+        return users
+    
     def get_or_create_user(self, group_id: str, user_id: str, nickname: str = "") -> UserData:
         """获取或创建用户数据"""
         user = self.get_user(group_id, user_id)

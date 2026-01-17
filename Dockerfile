@@ -4,6 +4,9 @@ FROM python:3.10-slim
 # 设置工作目录
 WORKDIR /app
 
+# 安装时区数据
+RUN apt-get update && apt-get install -y tzdata && rm -rf /var/lib/apt/lists/*
+
 # 复制依赖文件
 COPY requirements.txt .
 

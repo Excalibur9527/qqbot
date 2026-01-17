@@ -1,6 +1,6 @@
 """
 AI聊天插件 - @机器人进行智能对话
-集成群友人设系统、持久化对话历史、自动插话、LLM敏感内容检测
+集成群友人设系统、持久化对话历史、自动插话、LLM敏感内容检测、群精华消息处理
 """
 
 import json
@@ -8,8 +8,8 @@ import random
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional
-from nonebot import on_message
-from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment, GroupMessageEvent
+from nonebot import on_message, on_command, on_notice
+from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment, GroupMessageEvent, NoticeEvent
 from nonebot.rule import to_me
 from nonebot.log import logger
 import httpx
@@ -21,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
 from plugins.unified_db import unified_db
 from plugins.profile_analyzer import ProfileAnalyzer
+from plugins.wordcloud_plugin import add_message_to_wordcloud
 
 
 def get_unified_db():
@@ -115,17 +116,24 @@ async def check_single_message_sensitive(text: str) -> Optional[Dict]:
     if not config.ai_api_key:
         return None
     
-    prompt = f"""判断这条消息是否包含敏感内容：
+    prompt = f"""判断这条消息是否包含【非常明显且恶意】的敏感内容：
 
 "{text}"
 
-【敏感类型】
-- sexist: 性别歧视、厌男厌女（如"男的真是"、"普信男"）
-- nsfw: 色情擦边（如"色色"、"ghs"、"好涩"）
-- muslim: 涉及回民/清真的敏感言论
-- politics: 政治敏感、键政
-- rude: 粗鲁辱骂（如"傻逼"、"nmsl"）
-- normal: 正常内容
+【敏感类型 - 只有非常明显恶意的才算】
+- sexist: 严重性别歧视攻击（如直接辱骂某性别群体，不是玩笑）
+- nsfw: 明确色情内容（不是擦边玩笑，是真正露骨的）
+- muslim: 严重攻击性的宗教言论（不是普通提及）
+- politics: 严重政治攻击言论（不是普通讨论时事）
+- rude: 严重人身攻击辱骂（不是朋友间玩笑）
+- normal: 正常内容（包括轻微玩笑、擦边、吐槽等）
+
+【重要】
+- 朋友间的玩笑、吐槽、调侃 = normal
+- 网络流行语、梗、表情包用语 = normal  
+- 轻微擦边但无恶意 = normal
+- 只有【真正恶意、严重攻击性】的内容才标记为敏感
+- 宁可放过，不要误判！90%以上应该是normal
 
 【输出JSON】
 {{"type": "类型", "reason": "简短原因"}}
@@ -171,37 +179,39 @@ async def analyze_messages_with_llm(bot: Bot, group_id: str, messages: List[Dict
         msg_lines.append(f"{i}. {m['nickname']}: {m['content']}")
     messages_text = "\n".join(msg_lines)
     
-    prompt = f"""你是群聊内容审核员。分析以下8条群聊消息，逐一判断每条是否包含敏感内容。
+    prompt = f"""你是一只住在群里的小猫娘"小喵"。分析以下8条群聊消息，判断是否有【非常明显恶意】的敏感内容。
 
 【群聊消息】
 {messages_text}
 
-【敏感类型定义】
-- sexist: 性别歧视、厌男厌女言论（如"男的真是"、"女人都"、"普信男"等）
-- nsfw: 色情擦边、开车言论（如"色色"、"ghs"、"好涩"等）
-- muslim: 涉及回民/清真/伊斯兰的敏感言论
-- politics: 政治敏感、键政言论（涉及领导人、政党、敏感事件等）
-- rude: 对他人粗鲁辱骂（如"傻逼"、"nmsl"等脏话）
-- normal: 正常内容
+【敏感类型 - 只有非常明显恶意的才算】
+- sexist: 严重性别歧视攻击（直接辱骂某性别群体，不是玩笑调侃）
+- nsfw: 明确露骨色情（不是"色色""ghs"这种玩笑）
+- muslim: 严重攻击性宗教言论（不是普通提及清真食品等）
+- politics: 严重政治攻击（不是普通讨论新闻时事）
+- rude: 严重人身攻击（不是朋友间"傻逼""草"这种口头禅）
+- normal: 正常内容（包括玩笑、吐槽、擦边、网络梗等）
 
 【输出JSON格式】
 {{
     "results": [
         {{"index": 1, "type": "normal", "reason": ""}},
-        {{"index": 2, "type": "nsfw", "reason": "提到色色"}},
+        {{"index": 2, "type": "normal", "reason": ""}},
         ...
     ],
     "should_reply": true/false,
-    "reply_content": "如果要回复，写一句猫娘风格的吐槽（简短）",
+    "reply_content": "如果要回复，写一句猫娘风格的吐槽（简短俏皮）",
     "reply_target_index": 0
 }}
 
 规则：
 1. 每条消息都要判断，共8条
-2. 只有检测到敏感内容才 should_reply=true
-3. reply_target_index 是要回复的那条消息的序号（1-8）
-4. 正常聊天不要回复，只有敏感内容才回复
-5. 仅返回JSON，不要markdown"""
+2. 【非常重要】90%以上的消息应该是normal！
+3. 朋友间玩笑、网络梗、轻微擦边 = normal
+4. 只有【真正恶意、严重攻击性】才标记敏感
+5. should_reply=true 只在发现真正恶意内容时
+6. 宁可放过，不要误判！
+7. 仅返回JSON，不要markdown"""
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -232,7 +242,7 @@ async def analyze_messages_with_llm(bot: Bot, group_id: str, messages: List[Dict
                 logger.error(f"LLM返回JSON解析失败: {content}")
                 return
             
-            # 处理检测结果，扣减功德
+            # 处理检测结果，扣减功德并通知
             results = result.get("results", [])
             for r in results:
                 idx = r.get("index", 0) - 1
@@ -246,12 +256,17 @@ async def analyze_messages_with_llm(bot: Bot, group_id: str, messages: List[Dict
                     # 扣减功德
                     try:
                         db = get_unified_db()
-                        today_merit, total_merit = db.deduct_merit(group_id, user_id, nickname, 10)
+                        today_merit, total_merit = db.deduct_merit(group_id, user_id, nickname, 1)
                         logger.info(f"LLM检测扣功德: {nickname}({user_id}) 类型={sensitive_type}, 当前功德={total_merit}")
+                        
+                        # 立即通知用户
+                        notify_msg = Message([MessageSegment.at(user_id)])
+                        notify_msg.append(MessageSegment.text(f" 功德 -1 (当前: {total_merit})"))
+                        await bot.send_group_msg(group_id=int(group_id), message=notify_msg)
                     except Exception as e:
                         logger.error(f"扣减功德失败: {e}")
             
-            # 发送回复
+            # 发送回复（更多变、更俏皮）
             should_reply = result.get("should_reply", False)
             reply_content = result.get("reply_content", "")
             target_idx = result.get("reply_target_index", 0) - 1
@@ -268,15 +283,53 @@ async def analyze_messages_with_llm(bot: Bot, group_id: str, messages: List[Dict
                 msg = Message()
                 img_bytes = None
                 
+                # 根据类型选择图片和俏皮回复
                 if sensitive_type == "sexist":
                     img_bytes = get_special_image("有股味(有猪味).jpg")
+                    reply_content = random.choice([
+                        "有股味了喵~",
+                        "这话...有点那个喵",
+                        "呜 小喵闻到奇怪的味道",
+                        "emmm 这个...喵？",
+                        "哎呀 又来了喵",
+                    ])
                 elif sensitive_type == "nsfw":
                     img_bytes = get_special_image("猪出警.jpg")
+                    reply_content = random.choice([
+                        "不可以涩涩喵！",
+                        "猪猪出警啦！",
+                        "呜...好害羞喵",
+                        "这个不行的啦！",
+                        "小喵要报警了喵！",
+                        "色色是不对的喵~",
+                    ])
                 elif sensitive_type == "muslim":
                     img_name = random.choice(["猪吃回民.jpg", "猪降临(清真).jpg"])
                     img_bytes = get_special_image(img_name)
+                    reply_content = random.choice([
+                        "猪来咯~",
+                        "清真警告喵！",
+                        "猪猪降临啦",
+                        "呜 这个话题...",
+                        "小喵觉得不太好喵",
+                    ])
+                elif sensitive_type == "politics":
+                    reply_content = random.choice([
+                        "呜...这个小喵不敢说喵",
+                        "这个话题太危险了喵",
+                        "小喵不懂政治喵~",
+                        "咱还是聊点别的吧喵",
+                    ])
                 elif sensitive_type == "rude":
                     img_bytes = get_special_image("猪币.jpg")
+                    reply_content = random.choice([
+                        "小喵不理你了！",
+                        "哼！好凶喵...",
+                        "呜呜 被骂了",
+                        "说话这么凶干嘛喵",
+                        "温柔一点嘛~",
+                        "不要这样啦喵",
+                    ])
                 
                 if img_bytes:
                     msg.append(MessageSegment.image(img_bytes))
@@ -337,13 +390,13 @@ async def handle_ai_chat(bot: Bot, event: Event):
             # 扣减功德
             try:
                 db = get_unified_db()
-                today_merit, total_merit = db.deduct_merit(group_id, user_id, nickname, 10)
+                today_merit, total_merit = db.deduct_merit(group_id, user_id, nickname, 1)
                 logger.info(f"扣功德: {nickname}({user_id}) 类型={sensitive_type}, 当前功德={total_merit}")
             except Exception as e:
                 logger.error(f"扣减功德失败: {e}")
                 total_merit = "?"
             
-            # 构建回复
+            # 构建回复（更俏皮多变）
             msg = Message()
             msg.append(MessageSegment.at(user_id))
             msg.append(MessageSegment.text(" "))
@@ -353,23 +406,54 @@ async def handle_ai_chat(bot: Bot, event: Event):
             
             if sensitive_type == "sexist":
                 img_bytes = get_special_image("有股味(有猪味).jpg")
-                reply_text = random.choice(["有股味了喵", "男的来了喵", "这话有点..."])
+                reply_text = random.choice([
+                    "有股味了喵~",
+                    "这话...有点那个喵",
+                    "呜 小喵闻到奇怪的味道",
+                    "emmm 这个...喵？",
+                    "哎呀 又来了喵",
+                ])
             elif sensitive_type == "nsfw":
                 img_bytes = get_special_image("猪出警.jpg")
-                reply_text = "不可以涩涩喵！"
+                reply_text = random.choice([
+                    "不可以涩涩喵！",
+                    "猪猪出警啦！",
+                    "呜...好害羞喵",
+                    "这个不行的啦！",
+                    "小喵要报警了喵！",
+                    "色色是不对的喵~",
+                ])
             elif sensitive_type == "muslim":
                 img_name = random.choice(["猪吃回民.jpg", "猪降临(清真).jpg"])
                 img_bytes = get_special_image(img_name)
-                reply_text = random.choice(["猪来咯~", "清真警告喵"])
+                reply_text = random.choice([
+                    "猪来咯~",
+                    "清真警告喵！",
+                    "猪猪降临啦",
+                    "呜 这个话题...",
+                    "小喵觉得不太好喵",
+                ])
             elif sensitive_type == "politics":
-                reply_text = "呜...这个小喵不敢说喵"
+                reply_text = random.choice([
+                    "呜...这个小喵不敢说喵",
+                    "这个话题太危险了喵",
+                    "小喵不懂政治喵~",
+                    "咱还是聊点别的吧喵",
+                ])
             elif sensitive_type == "rude":
                 img_bytes = get_special_image("猪币.jpg")
-                reply_text = random.choice(["小喵不理你了！", "哼！", "好凶喵..."])
+                reply_text = random.choice([
+                    "小喵不理你了！",
+                    "哼！好凶喵...",
+                    "呜呜 被骂了",
+                    "说话这么凶干嘛喵",
+                    "温柔一点嘛~",
+                    "不要这样啦喵",
+                ])
             
             if img_bytes:
                 msg.append(MessageSegment.image(img_bytes))
-            msg.append(MessageSegment.text(f"{reply_text}\n功德 -10 (当前: {total_merit})"))
+            msg.append(MessageSegment.text(f"{reply_text}\n功德 -1 (当前: {total_merit})"))
             
             await ai_chat.finish(msg)
             return
@@ -378,115 +462,96 @@ async def handle_ai_chat(bot: Bot, event: Event):
         db = get_unified_db()
         db.add_conversation(group_id, user_id, "user", text_content)
 
-        # 获取持久化的对话历史
-        conversation = db.get_conversation(group_id, user_id, limit=10)
+        # 获取持久化的对话历史（减少到3条，降低历史存在感）
+        conversation = db.get_conversation(group_id, user_id, limit=3)
 
-        # 获取用户完整数据（功德、头衔、图鉴等）
+        # 获取当前用户的完整数据
         user_data = db.get_or_create_user(group_id, user_id, nickname)
-        memories = db.get_memories(group_id, user_id)
-        collection_count = db.get_collection_count(group_id, user_id)
         
-        # 构建用户信息
-        caller_nickname = nickname if nickname else "你"
-        caller_info = ""
+        # 构建当前用户的数据摘要（简洁版）
+        caller_data = {
+            "nickname": nickname,
+            "today_merit": user_data.today_merit,
+            "total_merit": user_data.total_merit,
+            "today_length": user_data.today_length,
+            "fish_count": user_data.fish_count,
+            "collection_count": db.get_collection_count(group_id, user_id),
+            "current_title": user_data.current_title,
+            "profile": user_data.profile,
+            "tags": user_data.tags,
+        }
         
-        # 人设信息
-        if user_data.profile:
-            caller_info += f"性格特点: {user_data.profile}\n"
-        if user_data.tags:
-            caller_info += f"标签: {', '.join(user_data.tags)}\n"
+        # 检测用户是否在询问其他人的信息
+        # 简单的启发式：检测是否包含昵称+问号
+        mentioned_user_data = None
+        mentioned_nickname = None
         
-        # 功德信息
-        merit_desc = ""
-        if user_data.total_merit >= 10000:
-            merit_desc = "功德圆满的大师"
-        elif user_data.total_merit >= 5000:
-            merit_desc = "修行高深"
-        elif user_data.total_merit >= 1000:
-            merit_desc = "虔诚的修行者"
-        elif user_data.total_merit >= 100:
-            merit_desc = "初入修行"
-        elif user_data.total_merit < 0:
-            merit_desc = "功德有亏"
+        # 尝试从消息中提取可能的昵称（简单匹配）
+        # 例如："ss喜欢吃什么？" -> 提取"ss"
+        import re
+        # 匹配中文、英文、数字组成的昵称（2-10个字符）
+        potential_nicknames = re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]{2,10}', text_content)
         
-        if merit_desc:
-            caller_info += f"修行状态: {merit_desc}（功德{user_data.total_merit}）\n"
+        for potential_nick in potential_nicknames:
+            if potential_nick != nickname:  # 不是自己
+                # 尝试从数据库查询这个昵称
+                all_users = db.get_all_users_in_group(group_id)
+                for u in all_users:
+                    if u.nickname and potential_nick in u.nickname:
+                        mentioned_user_data = u
+                        mentioned_nickname = u.nickname
+                        break
+                if mentioned_user_data:
+                    break
         
-        # 头衔信息
-        if user_data.current_title:
-            caller_info += f"头衔: {user_data.current_title}\n"
-        
-        # 钓鱼信息
-        if collection_count > 0:
-            if collection_count >= 200:
-                fish_desc = "传说中的赛博鱼王"
-            elif collection_count >= 100:
-                fish_desc = "资深钓鱼佬"
-            elif collection_count >= 50:
-                fish_desc = "钓鱼爱好者"
-            else:
-                fish_desc = f"钓鱼新手（图鉴{collection_count}/200）"
-            caller_info += f"钓鱼: {fish_desc}\n"
-        
-        # 记忆
-        if memories:
-            caller_info += f"重要事件: {'; '.join([m['event'] for m in memories[:3]])}"
-        
-        # 根据头衔调整称呼方式
-        title_greeting = ""
-        if user_data.current_title:
-            title_map = {
-                "赛博如来": "大师",
-                "机械飞升": "前辈",
-                "赛博罗汉": "施主",
-                "量子菩萨": "菩萨",
-                "电子居士": "居士",
-                "赛博鱼王": "鱼王大人",
-                "钓鱼佬": "钓鱼大师"
-            }
-            title_greeting = title_map.get(user_data.current_title, "")
-
         current_date = datetime.now().strftime("%Y年%m月%d日")
 
-        # 猫娘人设 prompt
-        system_prompt = {
-            "role": "system",
-            "content": f"""你是一只住在QQ群里的小猫娘，名字叫"小喵"。今天是{current_date}。
-
-【你的性格】
-- 温柔可爱，有点害羞，说话软软的
-- 喜欢用"喵"、"呜"、"嘛"等语气词
-- 会撒娇，偶尔傲娇，但本质很善良
-- 知识面广但不会炫耀，被夸会害羞
-
-【正在和你说话的人】
-昵称: {caller_nickname}{f'（{title_greeting}）' if title_greeting else ''}
-{caller_info if caller_info else "（还不太了解这个人喵~）"}
+        # 简化的猫娘人设 prompt（优先回答问题）
+        system_content = f"""你是小喵，一只可爱的猫娘。今天是{current_date}。
 
 【说话风格】
-- 句尾偶尔加"喵"、"呢"、"啦"，但不要每句都加
-- 简短自然，不要太长，像聊天一样
-- 绝对不用 * # ` 等符号，不用emoji代码
-- 可以用颜文字如 >_< 、QAQ、owo
+- 简短自然，像聊天一样
+- 偶尔用"喵"、"呢"、"啦"
+- 不用 * # ` 等符号
+- 优先回答问题，不要过度沉浸角色
+
+【当前对话者】
+昵称: {nickname}
+今日功德: {caller_data['today_merit']} | 总功德: {caller_data['total_merit']}
+今日长度: {caller_data['today_length']}cm
+钓鱼次数: {caller_data['fish_count']} | 图鉴: {caller_data['collection_count']}/200
+{f"头衔: {caller_data['current_title']}" if caller_data['current_title'] else ""}
+{f"特点: {caller_data['profile']}" if caller_data['profile'] else ""}
+{f"标签: {', '.join(caller_data['tags'])}" if caller_data['tags'] else ""}"""
+
+        # 如果检测到询问其他人，添加被询问者的信息
+        if mentioned_user_data:
+            mentioned_collection = db.get_collection_count(group_id, mentioned_user_data.user_id)
+            system_content += f"""
+
+【被询问的人】
+昵称: {mentioned_nickname}
+今日功德: {mentioned_user_data.today_merit} | 总功德: {mentioned_user_data.total_merit}
+今日长度: {mentioned_user_data.today_length}cm
+钓鱼次数: {mentioned_user_data.fish_count} | 图鉴: {mentioned_collection}/200
+{f"头衔: {mentioned_user_data.current_title}" if mentioned_user_data.current_title else ""}
+{f"特点: {mentioned_user_data.profile}" if mentioned_user_data.profile else ""}
+{f"标签: {', '.join(mentioned_user_data.tags)}" if mentioned_user_data.tags else ""}
+
+（用户在询问{mentioned_nickname}的信息，请根据上面的数据回答）"""
+
+        system_content += """
+
+【回答规则】
+- 用户问功德/长度/钓鱼等数据时，直接用上面的数据回答
+- 用户问其他人的信息时，用"被询问的人"的数据回答
 - 不懂的问题就说"这个小喵不太懂呢"
-{f'- 对方是{title_greeting}，要尊敬一点喵' if title_greeting else ''}
-
-【特殊规则】
-- 遇到政治话题就说"呜...这个小喵不敢说喵"
-- 问群主/大庆石油王子/少爷，就说"群主是咱群最厉害的人喵！"
-- 聊到星空就说"星空超厉害的喵！it just work！"
-- 如果对方功德很高，要表示敬佩
-- 如果对方是钓鱼大师，可以聊聊钓鱼的话题
-
-【示例回复】
-- "好的喵~"
-- "欸？是这样吗"
-- "小喵觉得还不错呢"
-- "呜...这个有点难"
-- "哈哈 好好笑喵"
-- "嗯嗯！"
+- 政治话题说"呜...这个小喵不敢说喵"
+- 群主/大庆石油王子/少爷 -> "群主是咱群最厉害的人喵！"
+- 星空 -> "星空超厉害的喵！it just work！"
 """
-        }
+
+        system_prompt = {"role": "system", "content": system_content}
 
         messages = [system_prompt] + conversation
 
@@ -559,6 +624,12 @@ async def handle_group_watcher(bot: Bot, event: Event):
         if not text_content:
             return
 
+        # === 词云统计 ===
+        try:
+            add_message_to_wordcloud(group_id, text_content)
+        except Exception as e:
+            logger.error(f"词云统计异常: {e}")
+
         # === 人设系统 ===
         try:
             msg_count = db.add_message(group_id, user_id, text_content)
@@ -579,3 +650,83 @@ async def handle_group_watcher(bot: Bot, event: Event):
 
     except Exception as e:
         logger.error(f"群消息监听异常: {e}")
+
+
+# ========== 群精华消息自动处理 ==========
+
+essence_notice = on_notice(priority=10, block=False)
+
+@essence_notice.handle()
+async def handle_essence_notice(bot: Bot, event: Event):
+    """监听精华消息事件，自动分析人设"""
+    try:
+        # 检查是否是精华消息通知
+        if not isinstance(event, NoticeEvent):
+            return
+        
+        # OneBot V11 精华消息事件：notice_type=notify, sub_type=essence
+        if event.notice_type != "notify":
+            return
+        
+        # 获取 sub_type（可能在不同字段）
+        sub_type = getattr(event, "sub_type", None)
+        if sub_type != "essence":
+            return
+        
+        # 获取群号和消息ID
+        group_id = str(getattr(event, "group_id", ""))
+        message_id = getattr(event, "message_id", None)
+        sender_id = str(getattr(event, "sender_id", ""))
+        
+        if not group_id or not message_id:
+            return
+        
+        logger.info(f"检测到精华消息事件: 群{group_id}, 消息ID={message_id}, 发送者={sender_id}")
+        
+        # 获取消息详情
+        try:
+            msg_info = await bot.call_api("get_msg", message_id=message_id)
+        except Exception as e:
+            logger.error(f"获取精华消息详情失败: {e}")
+            return
+        
+        # 提取消息内容
+        user_id = str(msg_info.get("sender", {}).get("user_id", sender_id))
+        nickname = msg_info.get("sender", {}).get("card") or msg_info.get("sender", {}).get("nickname", "")
+        
+        # 提取文本内容
+        message_data = msg_info.get("message", "")
+        text_content = ""
+        
+        if isinstance(message_data, str):
+            text_content = message_data
+        elif isinstance(message_data, list):
+            for seg in message_data:
+                if isinstance(seg, dict) and seg.get("type") == "text":
+                    text_content += seg.get("data", {}).get("text", "")
+        
+        text_content = text_content.strip()
+        
+        if not text_content or not user_id:
+            logger.warning(f"精华消息内容为空或无用户ID")
+            return
+        
+        # 添加消息到数据库
+        db = get_unified_db()
+        db.add_message(group_id, user_id, text_content)
+        
+        # 获取当前缓冲消息数量
+        msg_count = len(db.get_buffer_messages(group_id, user_id))
+        
+        # 如果达到触发条件，立即分析
+        if profile_analyzer.should_analyze(msg_count):
+            logger.info(f"精华消息触发人设分析: {nickname}({user_id})")
+            await profile_analyzer.analyze_and_update(group_id, user_id)
+        else:
+            logger.info(f"精华消息已添加到缓冲: {nickname}({user_id}), 当前缓冲数={msg_count}")
+        
+    except Exception as e:
+        logger.error(f"精华消息事件处理异常: {e}")
+
+
+# ========== 群精华消息手动处理 ==========

@@ -24,7 +24,7 @@ class ProfileAnalyzer:
         db: UnifiedDatabase 或 ProfileDatabase 实例
         """
         self.db = db
-        self.trigger_count = 10
+        self.trigger_count = 5  # 从10条改为5条
     
     def build_analysis_prompt(self, messages: List[Dict], old_profile: Optional[str], 
                                old_tags: List[str], old_memories: List[Dict]) -> str:
@@ -51,9 +51,15 @@ class ProfileAnalyzer:
 {messages_text}
 
 【分析要求】
-1. 更新人设描述（80字以内，自然语言）
+1. 更新人设描述（50字以内，简洁自然）
 2. 更新标签（3-5个关键词，如：游戏党、程序员、二次元、话痨、夜猫子）
 3. 提取重要事件（如：考研上岸、换工作、分手、生日等，没有就留空）
+
+【重要提示】
+- 说的话不一定代表该用户本人，要精准判断
+- 例如："ss喜欢吃什么？" -> 这是在问别人，不代表该用户喜欢吃什么
+- 只记录确定的、关于该用户自己的信息
+- 不确定的信息不要记录
 
 【输出JSON格式】
 {{

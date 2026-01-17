@@ -49,8 +49,9 @@ def load_plugins():
         # 自定义插件（注意加载顺序）
         nonebot.load_plugin("plugins.test_plugin")
         nonebot.load_plugin("plugins.length_plugin")
-        # woodfish_plugin 必须在 ai_chat_plugin 之前加载
+        # woodfish_plugin 和 wordcloud_plugin 必须在 ai_chat_plugin 之前加载
         nonebot.load_plugin("plugins.woodfish_plugin")
+        nonebot.load_plugin("plugins.wordcloud_plugin")
         nonebot.load_plugin("plugins.ai_chat_plugin")
         nonebot.load_plugin("plugins.pig_plugin")
         nonebot.load_plugin("plugins.roulette_plugin")

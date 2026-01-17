@@ -14,5 +14,7 @@ services:
       # OneBot WebSocket连接配置（使用localhost，因为都是host网络）
       - ONEBOT_WS_URLS=["ws://localhost:3001"]
       - ONEBOT_ACCESS_TOKEN=A,Fb*=CMI2L7WQp&
+      # 设置时区为中国时区
+      - TZ=Asia/Shanghai
     # 使用host网络模式，与lama容器共享网络命名空间
     network_mode: host
