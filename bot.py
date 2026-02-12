@@ -54,9 +54,11 @@ def load_plugins():
         nonebot.load_plugin("plugins.wordcloud_plugin")
         nonebot.load_plugin("plugins.ai_chat_plugin")
         nonebot.load_plugin("plugins.pig_plugin")
+        nonebot.load_plugin("plugins.pig_plugin_v2")
         nonebot.load_plugin("plugins.roulette_plugin")
         nonebot.load_plugin("plugins.persona_plugin")
         nonebot.load_plugin("plugins.tarot_plugin")
+        nonebot.load_plugin("plugins.fortune_plugin")
         # 新增插件
         nonebot.load_plugin("plugins.fishing_plugin")
         nonebot.load_plugin("plugins.title_plugin")

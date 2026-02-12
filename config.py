@@ -30,6 +30,11 @@ class Config(BaseSettings):
     ai_model: str = "gemini-3-flash-preview-nothinking"
     ai_max_tokens: int = 1000
     ai_temperature: float = 0.7
+    
+    # 联网搜索配置（SearXNG）
+    search_enabled: bool = True  # 是否启用联网搜索
+    # Docker host网络模式用 localhost，bridge网络模式用容器名
+    search_url: str = os.getenv("SEARXNG_URL", "http://localhost:8080")  # SearXNG 搜索服务地址
 
     # 插件配置
     length_plugin_enabled: bool = True

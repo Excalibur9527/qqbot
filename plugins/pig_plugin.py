@@ -85,7 +85,6 @@ def pick_daily_pig(user_id: str, group_id: str = "") -> Dict:
 
 # Commands
 today_pig_cmd = on_command("今天是什么小猪", aliases={"今日小猪", "抽小猪"}, block=True)
-random_pig_cmd = on_command("随机小猪", block=True)
 
 @today_pig_cmd.handle()
 async def handle_today_pig(bot: Bot, event: Event):
@@ -101,15 +100,6 @@ async def handle_today_pig(bot: Bot, event: Event):
     logger.info(f"User {user_id} got daily pig: {pig.get('name')}")
     
     await send_pig_result(today_pig_cmd, pig, prefix="今天你是：")
-
-@random_pig_cmd.handle()
-async def handle_random_pig(bot: Bot, event: Event):
-    if not PIG_LIST:
-        await random_pig_cmd.finish("猪圈现在是空的，稍后再来吧！")
-        return
-    
-    pig = pick_random_pig()
-    await send_pig_result(random_pig_cmd, pig, prefix="随机捕捉到一只：")
 
 async def send_pig_result(matcher, pig: Dict, prefix: str = ""):
     pig_id = pig.get("id", "")

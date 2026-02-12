@@ -3,9 +3,9 @@
 功能：统计今日群聊热点词，生成词云
 命令：/今日词云
 统计时间：0点开始，8点更新
+使用jieba分词 + 多层过滤机制
 """
 
-import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -15,28 +15,100 @@ from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 from nonebot.log import logger
 
-from plugins.unified_db import unified_db
+try:
+    import jieba
+    import jieba.posseg as pseg
+    JIEBA_AVAILABLE = True
+except ImportError:
+    JIEBA_AVAILABLE = False
+    logger.warning("jieba未安装，词云功能将使用简单分词")
 
 
-# 停用词列表（过滤无意义的词）
-STOP_WORDS = {
+# ========== 停用词库 ==========
+
+# 基础停用词（虚词、代词、连词等）
+BASIC_STOP_WORDS = {
     "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个", "上", "也", "很", "到",
-    "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "那", "啊", "吗", "呢", "吧", "哦",
-    "嗯", "哈", "呀", "喔", "哟", "嘿", "嘛", "啦", "咯", "喵", "呜", "嘛", "么", "吗", "呢", "吧", "啊",
+    "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "那", "他", "她", "它", "我们",
+    "你们", "他们", "这个", "那个", "这些", "那些", "这样", "那样", "怎么", "什么", "哪里", "为什么",
+    "因为", "所以", "但是", "然后", "如果", "虽然", "可是", "而且", "或者", "还是", "不过", "只是",
+    "已经", "还", "再", "又", "才", "就", "都", "只", "也", "还是", "更", "最", "非常", "十分", "特别",
+    "比较", "有点", "一点", "一些", "许多", "很多", "一直", "总是", "经常", "有时", "偶尔", "从来",
+    "能", "会", "可以", "应该", "必须", "需要", "想", "要", "得", "过", "来", "去", "给", "被", "把",
+    "让", "叫", "使", "由", "对", "向", "从", "以", "为", "于", "与", "及", "而", "或", "且", "则",
+}
+
+# 语气词（重点过滤）
+MODAL_WORDS = {
+    "啊", "呀", "哇", "呢", "吧", "嘛", "咯", "喽", "哦", "哟", "嘿", "嗨", "哈", "呵", "嘻", "嘿嘿",
+    "哈哈", "呵呵", "嘻嘻", "嘿嘿", "啦", "哪", "呐", "嘞", "喔", "唷", "哎", "哎呀", "哎哟", "唉",
+    "嗯", "嗯嗯", "嘛", "么", "嘞", "咧", "喵", "呜", "呜呜", "嘤", "嘤嘤", "嘶", "嘶嘶", "嘿咻",
+    "哼", "哼哼", "嗷", "嗷嗷", "嗷呜", "呃", "额", "emm", "emmm", "ummm", "嗷呜", "嗯哼", "嗯呐",
+}
+
+# 网络用语/表情词
+INTERNET_SLANG = {
+    "哈哈哈", "哈哈哈哈", "哈哈哈哈哈", "嘿嘿嘿", "嘻嘻嘻", "呵呵呵", "嘤嘤嘤", "呜呜呜", "嘤嘤嘤嘤",
+    "草", "草草草", "卧槽", "我去", "我靠", "牛逼", "牛批", "厉害", "666", "233", "2333", "23333",
+    "hhh", "hhhh", "hhhhh", "www", "wwww", "wwwww", "orz", "OTZ", "囧", "囧rz",
+}
+
+# 无意义单字（只过滤单字，词组中的不过滤）
+MEANINGLESS_SINGLE = {
+    "个", "些", "样", "种", "次", "下", "点", "会", "能", "要", "想", "看", "说", "做", "去", "来",
+    "给", "对", "把", "被", "让", "叫", "用", "从", "在", "到", "向", "往", "由", "为", "以", "及",
+}
+
+# 特殊符号和标点
+PUNCTUATION = {
     "/", "、", "，", "。", "！", "？", "：", "；", """, """, "'", "'", "（", "）", "[", "]", "{", "}", 
     "【", "】", "《", "》", "—", "…", "·", "~", "@", "#", "$", "%", "^", "&", "*", "+", "=", "|", "\\",
+    "<", ">", ".", ",", "!", "?", ":", ";", "'", '"', "(", ")", "-", "_", "`", "、", "，", "。",
 }
+
+# 合并所有停用词
+ALL_STOP_WORDS = BASIC_STOP_WORDS | MODAL_WORDS | INTERNET_SLANG | PUNCTUATION
+
+# 保留的词性（jieba分词用）
+KEEP_POS = {
+    'n',   # 名词
+    'nr',  # 人名
+    'ns',  # 地名
+    'nt',  # 机构名
+    'nz',  # 其他专名
+    'v',   # 动词
+    'vn',  # 名动词
+    'a',   # 形容词
+    'an',  # 名形词
+    'i',   # 成语
+    'l',   # 习用语
+    'eng', # 英文
+}
+
+# 自定义词典（群聊常见词组）
+CUSTOM_WORDS = [
+    "钓鱼", "敲木鱼", "木鱼", "功德", "小猪", "塔罗牌", "占卜", "运势", "今日长度",
+    "俄罗斯轮盘", "轮盘", "词云", "人设", "小喵", "猫娘", "群友", "机器人",
+    "打工人", "社畜", "摸鱼", "划水", "内卷", "躺平", "emo", "破防", "绷不住",
+]
 
 
 class WordCloudManager:
-    """词云管理器"""
+    """词云管理器 - 优化版"""
     
     def __init__(self):
         self.data_dir = Path("data/wordcloud")
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.group_messages: Dict[str, List[str]] = {}  # {group_id: [messages]}
-        self.group_dates: Dict[str, str] = {}  # {group_id: date}
-        self.group_wordclouds: Dict[str, Dict] = {}  # {group_id: {words, generated_at}}
+        self.group_messages: Dict[str, List[str]] = {}
+        self.group_dates: Dict[str, str] = {}
+        self.group_wordclouds: Dict[str, Dict] = {}
+        
+        # 初始化jieba
+        if JIEBA_AVAILABLE:
+            # 添加自定义词典
+            for word in CUSTOM_WORDS:
+                jieba.add_word(word)
+            logger.info("jieba分词初始化完成，已加载自定义词典")
     
     def add_message(self, group_id: str, text: str):
         """添加消息到缓冲"""
@@ -46,7 +118,6 @@ class WordCloudManager:
         if group_id not in self.group_dates or self.group_dates[group_id] != today:
             self.group_messages[group_id] = []
             self.group_dates[group_id] = today
-            # 清除旧的词云
             if group_id in self.group_wordclouds:
                 del self.group_wordclouds[group_id]
         
@@ -55,31 +126,52 @@ class WordCloudManager:
             self.group_messages[group_id] = []
         self.group_messages[group_id].append(text)
     
-    def extract_words(self, text: str) -> List[str]:
-        """提取词语（简单的中文分词）"""
+    def extract_words_jieba(self, text: str) -> List[str]:
+        """使用jieba分词提取词语（推荐）"""
+        words = []
+        
+        # 使用词性标注分词
+        word_pairs = pseg.cut(text)
+        
+        for word, pos in word_pairs:
+            # 多层过滤
+            # 1. 过滤停用词
+            if word in ALL_STOP_WORDS:
+                continue
+            
+            # 2. 过滤单字无意义词
+            if len(word) == 1 and word in MEANINGLESS_SINGLE:
+                continue
+            
+            # 3. 只保留2-4字的词
+            if len(word) < 2 or len(word) > 4:
+                continue
+            
+            # 4. 词性过滤（只保留有意义的词性）
+            if pos not in KEEP_POS:
+                continue
+            
+            # 5. 过滤纯数字和纯英文
+            if word.isdigit() or word.isalpha():
+                continue
+            
+            words.append(word)
+        
+        return words
+    
+    def extract_words_simple(self, text: str) -> List[str]:
+        """简单分词（jieba不可用时的备用方案）"""
         # 移除特殊字符和数字
         text = re.sub(r'[0-9a-zA-Z\s]+', ' ', text)
         
-        # 简单的中文分词：提取2-4个字的词组
         words = []
         
-        # 提取2字词
-        for i in range(len(text) - 1):
-            word = text[i:i+2]
-            if len(word) == 2 and word not in STOP_WORDS:
-                words.append(word)
-        
-        # 提取3字词
-        for i in range(len(text) - 2):
-            word = text[i:i+3]
-            if len(word) == 3 and word not in STOP_WORDS:
-                words.append(word)
-        
-        # 提取4字词
-        for i in range(len(text) - 3):
-            word = text[i:i+4]
-            if len(word) == 4 and word not in STOP_WORDS:
-                words.append(word)
+        # 提取2-4字词组
+        for length in [2, 3, 4]:
+            for i in range(len(text) - length + 1):
+                word = text[i:i+length]
+                if len(word) == length and word not in ALL_STOP_WORDS:
+                    words.append(word)
         
         return words
     
@@ -95,7 +187,10 @@ class WordCloudManager:
         # 提取所有词语
         all_words = []
         for msg in messages:
-            words = self.extract_words(msg)
+            if JIEBA_AVAILABLE:
+                words = self.extract_words_jieba(msg)
+            else:
+                words = self.extract_words_simple(msg)
             all_words.extend(words)
         
         # 统计词频
@@ -107,7 +202,8 @@ class WordCloudManager:
         result = {
             "words": [{"word": w, "count": c} for w, c in top_words],
             "count": len(messages),
-            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "method": "jieba" if JIEBA_AVAILABLE else "simple"
         }
         
         # 缓存词云
@@ -130,7 +226,7 @@ class WordCloudManager:
                 try:
                     gen_date = datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S").date()
                     if gen_date == date.today():
-                        return False  # 今天已经生成过
+                        return False
                 except:
                     pass
         
@@ -178,7 +274,8 @@ async def handle_wordcloud(bot: Bot, event: Event):
             return
         
         # 格式化输出
-        lines = ["📊 今日词云 📊"]
+        method_text = "智能分词" if wordcloud_data.get("method") == "jieba" else "简单分词"
+        lines = [f"📊 今日词云 ({method_text}) 📊"]
         lines.append(f"统计消息: {wordcloud_data['count']} 条")
         lines.append(f"生成时间: {wordcloud_data['generated_at']}")
         lines.append("")
