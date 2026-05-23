@@ -62,6 +62,8 @@ def load_plugins():
         # 新增插件
         nonebot.load_plugin("plugins.fishing_plugin")
         nonebot.load_plugin("plugins.title_plugin")
+        nonebot.load_plugin("plugins.oil_price_plugin")
+        nonebot.load_plugin("plugins.food_plugin")
         
         logger.info("插件加载完成")
     except Exception as e:
