@@ -17,8 +17,19 @@ from nonebot.log import logger
 
 from plugins.daily_utils import get_daily_seed
 
-# HowToCook 菜谱目录
-COOK_DIR = Path("/Users/znkj/PycharmProjects/HowToCook/dishes")
+# HowToCook 菜谱目录（优先环境变量，否则自动检测）
+import os
+COOK_DIR = Path(os.environ.get("HOWTOCOOK_DIR", "")) if os.environ.get("HOWTOCOOK_DIR") else None
+if not COOK_DIR or not COOK_DIR.exists():
+    # 自动检测：本地开发 / 服务器部署
+    for candidate in [
+        Path(__file__).parent.parent.parent / "HowToCook" / "dishes",  # qqbot/../HowToCook/dishes
+        Path("/www/wwwroot/HowToCook/dishes"),  # 服务器路径
+        Path("/Users/znkj/PycharmProjects/HowToCook/dishes"),  # 本地开发路径
+    ]:
+        if candidate.exists():
+            COOK_DIR = candidate
+            break
 
 # 时间段 → 推荐分类映射
 TIME_CATEGORY_MAP = {
