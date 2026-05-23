@@ -22,7 +22,9 @@ import os
 COOK_DIR = Path(os.environ.get("HOWTOCOOK_DIR", "")) if os.environ.get("HOWTOCOOK_DIR") else None
 if not COOK_DIR or not COOK_DIR.exists():
     # 自动检测：本地开发 / 服务器部署
+    # __file__ = /app/plugins/food_plugin.py → parent.parent = /app
     for candidate in [
+        Path(__file__).parent.parent / "HowToCook" / "dishes",  # /app/HowToCook/dishes (容器内/qqbot项目内)
         Path(__file__).parent.parent.parent / "HowToCook" / "dishes",  # qqbot/../HowToCook/dishes
         Path("/www/wwwroot/HowToCook/dishes"),  # 服务器路径
         Path("/Users/znkj/PycharmProjects/HowToCook/dishes"),  # 本地开发路径
